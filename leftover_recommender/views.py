@@ -53,16 +53,39 @@ def find_matching_recipes_fuzzy(ingredients, df, threshold=70, match_threshold=0
     return matching_recipes[['name', 'canonical_ingredients', 'match_score', 'steps']].to_dict(orient='records')
 
 
+import time
+from functools import wraps
+
+
+class TimerContext:
+    def __init__(self, name):
+        self.name = name
+        self.start_time = None
+
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        end_time = time.time()
+        duration = round(end_time - self.start_time, 2)
+        return duration
+
+
 @csrf_exempt
 def recommend_recipes(request):
     """
     API endpoint to recommend recipes based on leftover ingredients.
     """
+    timings = {}
+
     if request.method == 'POST':
         try:
-            # Parse the request body
-            data = json.loads(request.body)
-            ingredients = data.get('ingredients', [])
+            # Time request parsing
+            with TimerContext('parse_request') as timer:
+                data = json.loads(request.body)
+                ingredients = data.get('ingredients', [])
+            timings['parse_request'] = timer.__exit__(None, None, None)
 
             if not isinstance(ingredients, list):
                 return JsonResponse({'error': 'Ingredients must be a list'}, status=400)
@@ -70,12 +93,27 @@ def recommend_recipes(request):
             if not ingredients:
                 return JsonResponse({'error': 'No ingredients provided'}, status=400)
 
-            # Fetch the dataset from Azure Blob Storage
-            df = get_dataframe_from_blob()
+            # Time data fetching
+            with TimerContext('fetch_data') as timer:
+                df = get_dataframe_from_blob()
+            timings['fetch_data'] = timer.__exit__(None, None, None)
 
-            # Find matching recipes
-            recipes = find_matching_recipes_fuzzy(ingredients, df)
-            return JsonResponse({'recipes': recipes}, status=200)
+            # Time recipe matching
+            with TimerContext('find_recipes') as timer:
+                recipes = find_matching_recipes_fuzzy(ingredients, df)
+            timings['find_recipes'] = timer.__exit__(None, None, None)
+
+            return JsonResponse({
+                'recipes': recipes,
+                'timings': timings,
+                'total_time': sum(timings.values())
+            }, status=200)
+
         except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+            return JsonResponse({
+                'error': str(e),
+                'timings': timings,
+                'total_time': sum(timings.values())
+            }, status=500)
+
     return JsonResponse({'error': 'Invalid request method'}, status=405)
